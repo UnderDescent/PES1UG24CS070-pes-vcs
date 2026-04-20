@@ -10,12 +10,15 @@
 //   "100644 hello.txt\0" followed by 32 raw bytes of SHA-256
 
 #include "tree.h"
+#include "index.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
 #include <sys/stat.h>
 
+
+int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out);
 // ─── Mode Constants ─────────────────────────────────────────────────────────
 
 #define MODE_FILE      0100644
@@ -130,74 +133,100 @@ int tree_serialize(const Tree *tree, void **data_out, size_t *len_out) {
 //
 // Returns 0 on success, -1 on error.
 
+// Build a tree hierarchy from the current index and write all tree
+// objects to the object store.
+//
+// Returns 0 on success, -1 on error.
 
-static int write_tree_level(IndexEntry *entries, int count, const char *prefix, ObjectID *id_out) {
+// Recursive helper: builds a tree for all entries sharing a common prefix at 'depth'.
+static int write_tree_level(IndexEntry *entries, int count, int depth, ObjectID *id_out) {
     Tree tree;
     tree.count = 0;
 
     int i = 0;
     while (i < count) {
-        const char *full_path = entries[i].path;
-        const char *rel = full_path + strlen(prefix);  // strip prefix to get relative name
-        //  e.g. prefix="src/"  full_path="src/main.c"  →  rel="main.c"
+        // Find the path component at this depth
+        const char *path = entries[i].path;
 
-        const char *slash = strchr(rel, '/');
+        // Walk past 'depth' slashes to find the component at our level
+        const char *p = path;
+        for (int d = 0; d < depth; d++) {
+            p = strchr(p, '/');
+            if (!p) return -1;
+            p++; // skip the '/'
+        }
+
+        const char *slash = strchr(p, '/');
 
         if (!slash) {
-            // No slash → direct file in this directory, just add it
-            TreeEntry *e = &tree.entries[tree.count++];
-            e->mode = get_file_mode(full_path);
-            e->hash = entries[i].hash;
-            strncpy(e->name, rel, sizeof(e->name) - 1);
+            // It's a file at this level — add directly
+            TreeEntry *entry = &tree.entries[tree.count++];
+            entry->mode = entries[i].mode;
+            strncpy(entry->name, p, sizeof(entry->name) - 1);
+            entry->name[sizeof(entry->name) - 1] = '\0';
+            entry->hash = entries[i].hash;
             i++;
         } else {
-            // Has slash → belongs to a subdirectory
-            // e.g. rel="util/helper.c" → dir_name="util"
-            size_t dir_len = slash - rel;
+            // It's a directory — find all entries sharing this subdirectory prefix
+            size_t dir_len = slash - p;
             char dir_name[256];
-            strncpy(dir_name, rel, dir_len);
+            if (dir_len >= sizeof(dir_name)) return -1;
+            memcpy(dir_name, p, dir_len);
             dir_name[dir_len] = '\0';
 
-            // Build the new prefix for recursion e.g. "src/" + "util/" = "src/util/"
-            char new_prefix[1024];
-            snprintf(new_prefix, sizeof(new_prefix), "%s%s/", prefix, dir_name);
-
-            // Collect all entries that belong to this subdir
+            // Count how many entries belong to this subdir
             int j = i;
-            while (j < count && strncmp(entries[j].path, new_prefix, strlen(new_prefix)) == 0)
+            while (j < count) {
+                const char *q = entries[j].path;
+                for (int d = 0; d < depth; d++) {
+                    q = strchr(q, '/');
+                    if (!q) break;
+                    q++;
+                }
+                if (strncmp(q, dir_name, dir_len) != 0 || q[dir_len] != '/')
+                    break;
                 j++;
-            // entries[i..j-1] all belong to new_prefix
+            }
 
-            // Recurse — will return the subtree's hash in sub_id
+            // Recurse to build the subtree
             ObjectID sub_id;
-            if (write_tree_level(entries + i, j - i, new_prefix, &sub_id) != 0)
+            if (write_tree_level(entries + i, j - i, depth + 1, &sub_id) != 0)
                 return -1;
 
-            // Add subtree as a single entry in the current tree
-            TreeEntry *e = &tree.entries[tree.count++];
-            e->mode = MODE_DIR;
-            e->hash = sub_id;
-            strncpy(e->name, dir_name, sizeof(e->name) - 1);
+            // Add the subtree entry
+            TreeEntry *entry = &tree.entries[tree.count++];
+            entry->mode = MODE_DIR;
+            strncpy(entry->name, dir_name, sizeof(entry->name) - 1);
+            entry->name[sizeof(entry->name) - 1] = '\0';
+            entry->hash = sub_id;
 
-            i = j;  // skip past all entries we just consumed
+            i = j;
         }
     }
-    
+
+    // Serialize and write this tree level
     void *data;
     size_t len;
     if (tree_serialize(&tree, &data, &len) != 0) return -1;
 
     int ret = object_write(OBJ_TREE, data, len, id_out);
     free(data);
-    return ret;  // 0 on success, -1 on failure
+    return ret;
 }
-
-
-
 
 int tree_from_index(ObjectID *id_out) {
     Index index;
     if (index_load(&index) != 0) return -1;
-
-    return write_tree_level(index.entries, index.count, "", id_out);
+    if (index.count == 0) {
+        // Empty tree
+        Tree empty;
+        empty.count = 0;
+        void *data;
+        size_t len;
+        if (tree_serialize(&empty, &data, &len) != 0) return -1;
+        int ret = object_write(OBJ_TREE, data, len, id_out);
+        free(data);
+        return ret;
+    }
+    return write_tree_level(index.entries, index.count, 0, id_out);
 }
