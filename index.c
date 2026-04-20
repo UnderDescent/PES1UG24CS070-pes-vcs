@@ -189,11 +189,58 @@ int index_load(Index *index) {
 //
 // Returns 0 on success, -1 on error.
 int index_save(const Index *index) {
-    // TODO: Implement atomic index saving
-    // (See Lab Appendix for logical steps)
-    (void)index;
-    return -1;
+    // Work on a mutable copy so we can sort without touching the caller's data.
+    Index sorted = *index;
+    qsort(sorted.entries, sorted.count, sizeof(IndexEntry), entry_cmp);
+ 
+    // Write to a temp file in the same directory as the real index so that
+    // rename(2) is guaranteed to be on the same filesystem (atomic).
+    const char *tmp_path = ".pes/index.tmp";
+ 
+    FILE *f = fopen(tmp_path, "w");
+    if (!f) {
+        perror("index_save: fopen");
+        return -1;
+    }
+ 
+    for (int i = 0; i < sorted.count; i++) {
+        const IndexEntry *e = &sorted.entries[i];
+ 
+        // Convert the binary ObjectID to a 64-char hex string.
+        char hex[65];
+        hash_to_hex(&e->hash, hex);
+ 
+        // Write: mode  hex-hash  mtime  size  path
+        fprintf(f, "%o %s %llu %u %s\n",
+                e->mode,
+                hex,
+                (unsigned long long)e->mtime_sec,
+                e->size,
+                e->path);
+    }
+ 
+    // Flush libc buffers → kernel buffers → disk before we rename.
+    if (fflush(f) != 0) {
+        perror("index_save: fflush");
+        fclose(f);
+        return -1;
+    }
+    if (fsync(fileno(f)) != 0) {
+        perror("index_save: fsync");
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+ 
+    // Atomically replace the real index with the fully-written temp file.
+    if (rename(tmp_path, ".pes/index") != 0) {
+        perror("index_save: rename");
+        return -1;
+    }
+ 
+    return 0;
 }
+ 
 
 // Stage a file for the next commit.
 //
