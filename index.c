@@ -252,8 +252,82 @@ int index_save(const Index *index) {
 //
 // Returns 0 on success, -1 on error.
 int index_add(Index *index, const char *path) {
-    // TODO: Implement file staging
-    // (See Lab Appendix for logical steps)
-    (void)index; (void)path;
-    return -1;
+    // ── Step 1: Read the file contents ──────────────────────────────────────
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "error: cannot open '%s'\n", path);
+        return -1;
+    }
+ 
+    // Determine file size.
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    rewind(f);
+ 
+    if (file_size < 0) {
+        fprintf(stderr, "error: cannot determine size of '%s'\n", path);
+        fclose(f);
+        return -1;
+    }
+ 
+    unsigned char *buf = malloc((size_t)file_size);
+    if (!buf && file_size > 0) {
+        fprintf(stderr, "error: out of memory\n");
+        fclose(f);
+        return -1;
+    }
+ 
+    if (file_size > 0 && fread(buf, 1, (size_t)file_size, f) != (size_t)file_size) {
+        fprintf(stderr, "error: failed to read '%s'\n", path);
+        free(buf);
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+ 
+    // ── Step 2: Write as a blob object ──────────────────────────────────────
+    ObjectID hash;
+    if (object_write(OBJ_BLOB, buf, (size_t)file_size, &hash) != 0) {
+        fprintf(stderr, "error: object_write failed for '%s'\n", path);
+        free(buf);
+        return -1;
+    }
+    free(buf);
+ 
+    // ── Step 3: Stat the file for metadata ──────────────────────────────────
+    struct stat st;
+    if (lstat(path, &st) != 0) {
+        fprintf(stderr, "error: cannot stat '%s'\n", path);
+        return -1;
+    }
+ 
+    // ── Step 4: Update or insert the index entry ─────────────────────────────
+    IndexEntry *existing = index_find(index, path);
+    if (existing) {
+        // File was already staged — update it in place.
+        existing->hash      = hash;
+        existing->mode      = (uint32_t)st.st_mode & 0777
+                              ? (S_IXUSR & st.st_mode ? 100755 : 100644)
+                              : 100644;
+        existing->mtime_sec = (uint64_t)st.st_mtime;
+        existing->size      = (uint32_t)st.st_size;
+    } else {
+        // New file — append a fresh entry.
+        if (index->count >= MAX_INDEX_ENTRIES) {
+            fprintf(stderr, "error: index is full\n");
+            return -1;
+        }
+        IndexEntry *e = &index->entries[index->count];
+        e->hash      = hash;
+        e->mode      = (S_IXUSR & st.st_mode) ? 100755 : 100644;
+        e->mtime_sec = (uint64_t)st.st_mtime;
+        e->size      = (uint32_t)st.st_size;
+        // Copy path safely.
+        strncpy(e->path, path, sizeof(e->path) - 1);
+        e->path[sizeof(e->path) - 1] = '\0';
+        index->count++;
+    }
+ 
+    // ── Step 5: Persist ─────────────────────────────────────────────────────
+    return index_save(index);
 }
