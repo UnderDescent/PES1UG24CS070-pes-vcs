@@ -129,6 +129,66 @@ int tree_serialize(const Tree *tree, void **data_out, size_t *len_out) {
 //   - object_write    : save that binary buffer to the store as OBJ_TREE
 //
 // Returns 0 on success, -1 on error.
+
+
+static int write_tree_level(IndexEntry *entries, int count, const char *prefix, ObjectID *id_out) {
+    Tree tree;
+    tree.count = 0;
+
+    int i = 0;
+    while (i < count) {
+        const char *full_path = entries[i].path;
+        const char *rel = full_path + strlen(prefix);  // strip prefix to get relative name
+        //  e.g. prefix="src/"  full_path="src/main.c"  →  rel="main.c"
+
+        const char *slash = strchr(rel, '/');
+
+        if (!slash) {
+            // No slash → direct file in this directory, just add it
+            TreeEntry *e = &tree.entries[tree.count++];
+            e->mode = get_file_mode(full_path);
+            e->hash = entries[i].hash;
+            strncpy(e->name, rel, sizeof(e->name) - 1);
+            i++;
+        } else {
+            // Has slash → belongs to a subdirectory
+            // e.g. rel="util/helper.c" → dir_name="util"
+            size_t dir_len = slash - rel;
+            char dir_name[256];
+            strncpy(dir_name, rel, dir_len);
+            dir_name[dir_len] = '\0';
+
+            // Build the new prefix for recursion e.g. "src/" + "util/" = "src/util/"
+            char new_prefix[1024];
+            snprintf(new_prefix, sizeof(new_prefix), "%s%s/", prefix, dir_name);
+
+            // Collect all entries that belong to this subdir
+            int j = i;
+            while (j < count && strncmp(entries[j].path, new_prefix, strlen(new_prefix)) == 0)
+                j++;
+            // entries[i..j-1] all belong to new_prefix
+
+            // Recurse — will return the subtree's hash in sub_id
+            ObjectID sub_id;
+            if (write_tree_level(entries + i, j - i, new_prefix, &sub_id) != 0)
+                return -1;
+
+            // Add subtree as a single entry in the current tree
+            TreeEntry *e = &tree.entries[tree.count++];
+            e->mode = MODE_DIR;
+            e->hash = sub_id;
+            strncpy(e->name, dir_name, sizeof(e->name) - 1);
+
+            i = j;  // skip past all entries we just consumed
+        }
+    }
+    
+    return -1; // placeholder, more to come
+}
+
+
+
+
 int tree_from_index(ObjectID *id_out) {
     Index index;
     if (index_load(&index) != 0) return -1;
