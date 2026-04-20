@@ -213,7 +213,8 @@ static int write_tree_level(IndexEntry *entries, int count, int depth, ObjectID 
     free(data);
     return ret;
 }
-
+//implemented in index.c due to segmentation faults
+/*
 int tree_from_index(ObjectID *id_out) {
     Index index;
     if (index_load(&index) != 0) return -1;
@@ -230,3 +231,4 @@ int tree_from_index(ObjectID *id_out) {
     }
     return write_tree_level(index.entries, index.count, 0, id_out);
 }
+*/

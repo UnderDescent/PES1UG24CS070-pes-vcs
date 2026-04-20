@@ -119,7 +119,10 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
     char final_path[512], shard_dir[512];
     object_path(id_out, final_path, sizeof(final_path));
     snprintf(shard_dir, sizeof(shard_dir), "%s", final_path);
-    *strrchr(shard_dir, '/') = '\0';
+    char *last_slash = strrchr(shard_dir, '/');
+    if (last_slash) {
+    	*last_slash = '\0';
+    }
     mkdir(shard_dir, 0755);
 
     // Temp file + write loop
