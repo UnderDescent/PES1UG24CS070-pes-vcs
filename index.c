@@ -127,6 +127,14 @@ int index_status(const Index *index) {
 
 // ─── TODO: Implement these ───────────────────────────────────────────────────
 
+// Comparison function for qsort: sorts IndexEntry pointers by path lexicographically.
+static int entry_cmp(const void *a, const void *b) {
+    const IndexEntry *ea = (const IndexEntry *)a;
+    const IndexEntry *eb = (const IndexEntry *)b;
+    return strcmp(ea->path, eb->path);
+}
+
+
 // Load the index from .pes/index.
 //
 // HINTS - Useful functions:
@@ -135,12 +143,41 @@ int index_status(const Index *index) {
 //
 // Returns 0 on success, -1 on error.
 int index_load(Index *index) {
-    // TODO: Implement index loading
-    // (See Lab Appendix for logical steps)
-    (void)index;
-    return -1;
+    // Start with an empty index — if the file simply doesn't exist yet
+    // (fresh repo, nothing staged) that is perfectly normal.
+    index->count = 0;
+ 
+    FILE *f = fopen(".pes/index", "r");
+    if (!f) {
+        // ENOENT → empty index, not an error.
+        return 0;
+    }
+ 
+    char hex[65];   // 64 hex chars + NUL
+    while (index->count < MAX_INDEX_ENTRIES) {
+        IndexEntry *e = &index->entries[index->count];
+ 
+        // Read: mode  hex-hash  mtime  size  path
+        int matched = fscanf(f,
+                             "%o %64s %llu %u %511s\n",
+                             &e->mode,
+                             hex,
+                             (unsigned long long *)&e->mtime_sec,
+                             &e->size,
+                             e->path);
+ 
+        if (matched == EOF || matched < 5)
+            break;  // done (clean EOF) or malformed line → stop
+ 
+        // Convert the 64-char hex string back to the binary ObjectID.
+        hex_to_hash(hex, &e->hash);
+ 
+        index->count++;
+    }
+ 
+    fclose(f);
+    return 0;
 }
-
 // Save the index to .pes/index atomically.
 //
 // HINTS - Useful functions and syscalls:
