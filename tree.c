@@ -183,7 +183,13 @@ static int write_tree_level(IndexEntry *entries, int count, const char *prefix, 
         }
     }
     
-    return -1; // placeholder, more to come
+    void *data;
+    size_t len;
+    if (tree_serialize(&tree, &data, &len) != 0) return -1;
+
+    int ret = object_write(OBJ_TREE, data, len, id_out);
+    free(data);
+    return ret;  // 0 on success, -1 on failure
 }
 
 
@@ -192,9 +198,6 @@ static int write_tree_level(IndexEntry *entries, int count, const char *prefix, 
 int tree_from_index(ObjectID *id_out) {
     Index index;
     if (index_load(&index) != 0) return -1;
-    
-    // index.entries  → array of IndexEntry, each has .path and .hash
-    // index.count    → how many entries
-    
-    return -1; // placeholder, more to come
+
+    return write_tree_level(index.entries, index.count, "", id_out);
 }
