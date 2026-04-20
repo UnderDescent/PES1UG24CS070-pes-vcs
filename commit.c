@@ -193,9 +193,51 @@ int head_update(const ObjectID *new_commit) {
 //   - head_update       : moves the branch pointer to your new commit
 //
 // Returns 0 on success, -1 on error.
+// Create a new commit from the current staging area.
 int commit_create(const char *message, ObjectID *commit_id_out) {
-    // TODO: Implement commit creation
-    // (See Lab Appendix for logical steps)
-    (void)message; (void)commit_id_out;
-    return -1;
+    Commit c;
+    memset(&c, 0, sizeof(c));
+
+    // 1. Build a tree from the index. This snapshots the STAGED state.
+    if (tree_from_index(&c.tree) != 0) {
+        fprintf(stderr, "error: failed to create tree from index\n");
+        return -1;
+    }
+
+    // 2. Read current HEAD to find the parent. 
+    // head_read returns -1 if this is the very first commit (no parent).
+    if (head_read(&c.parent) == 0) {
+        c.has_parent = 1;
+    } else {
+        c.has_parent = 0;
+    }
+
+    // 3. Set metadata: Author and Timestamp
+    snprintf(c.author, sizeof(c.author), "%s", pes_author());
+    c.timestamp = (uint64_t)time(NULL);
+    
+    // 4. Set the message
+    snprintf(c.message, sizeof(c.message), "%s", message);
+
+    // 5. Serialize the Commit struct into the PES text format
+    void *data;
+    size_t len;
+    if (commit_serialize(&c, &data, &len) != 0) {
+        return -1;
+    }
+
+    // 6. Write the serialized commit to the object store
+    if (object_write(OBJ_COMMIT, data, len, commit_id_out) != 0) {
+        free(data);
+        return -1;
+    }
+    free(data); // Free the buffer allocated by commit_serialize
+
+    // 7. Update the HEAD (or the current branch) to point to this new commit
+    if (head_update(commit_id_out) != 0) {
+        fprintf(stderr, "error: failed to update HEAD\n");
+        return -1;
+    }
+
+    return 0;
 }
